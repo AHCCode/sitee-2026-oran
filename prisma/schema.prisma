@@ -1,0 +1,183 @@
+// AFRIMÉTIERS HUB — Prisma schema
+// SQLite is used for zero-config local development. Switch `provider` to
+// "postgresql" and update DATABASE_URL to run on PostgreSQL (no other change
+// is required: enums are modelled as validated strings for portability).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Back-office users. role: "ADMIN" (full access) | "VIEWER" (authenticated, no admin rights → 403)
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  username     String    @unique
+  name         String
+  passwordHash String
+  role         String    @default("ADMIN")
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  sessions     Session[]
+  quoteEvents  QuoteEvent[]
+}
+
+/// Server-side sessions: the cookie only carries a random token, the DB stores
+/// its SHA-256 hash. Logout deletes the row → effective invalidation.
+model Session {
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+  userId    String
+  expiresAt DateTime
+  userAgent String?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/// Trades / métiers
+model Category {
+  id       Int       @id @default(autoincrement())
+  slug     String    @unique
+  nameFr   String
+  nameEn   String
+  icon     String
+  artisans Artisan[]
+}
+
+model Country {
+  id       Int       @id @default(autoincrement())
+  code     String    @unique // ISO 3166-1 alpha-2
+  nameFr   String
+  nameEn   String
+  cities   City[]
+  artisans Artisan[]
+}
+
+model City {
+  id        Int       @id @default(autoincrement())
+  name      String
+  countryId Int
+  country   Country   @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  artisans  Artisan[]
+
+  @@unique([countryId, name])
+  @@index([countryId])
+}
+
+/// status: "DRAFT" | "PUBLISHED" | "ARCHIVED"
+model Artisan {
+  id              String    @id @default(cuid())
+  fullName        String
+  businessName    String?
+  categoryId      Int
+  countryId       Int
+  cityId          Int
+  phone           String
+  email           String
+  website         String?
+  bio             String
+  yearsExperience Int       @default(0)
+  featured        Boolean   @default(false)
+  status          String    @default("DRAFT")
+  /// Normalised (lower-case, accent-free) text used for full-text-like search
+  searchText      String    @default("")
+  publishedAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  category Category         @relation(fields: [categoryId], references: [id])
+  country  Country          @relation(fields: [countryId], references: [id])
+  city     City             @relation(fields: [cityId], references: [id])
+  services ArtisanService[]
+  photos   ArtisanPhoto[]
+  quotes   QuoteRequest[]
+
+  @@index([status])
+  @@index([categoryId])
+  @@index([countryId])
+  @@index([cityId])
+  @@index([featured])
+}
+
+model ArtisanService {
+  id        String  @id @default(cuid())
+  artisanId String
+  name      String
+  position  Int     @default(0)
+  artisan   Artisan @relation(fields: [artisanId], references: [id], onDelete: Cascade)
+
+  @@index([artisanId])
+}
+
+model ArtisanPhoto {
+  id        String   @id @default(cuid())
+  artisanId String
+  url       String
+  caption   String?
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+  artisan   Artisan  @relation(fields: [artisanId], references: [id], onDelete: Cascade)
+
+  @@index([artisanId])
+}
+
+/// status: "PENDING" | "IN_PROGRESS" | "FORWARDED" | "PROCESSED"
+model QuoteRequest {
+  id                 String    @id @default(cuid())
+  reference          String    @unique // DEV-YYYY-NNNN
+  /// Unguessable token allowing the client to view their own confirmation page
+  publicToken        String    @unique
+  artisanId          String?
+  /// Snapshot so the request stays readable if the artisan is deleted
+  artisanName        String
+  clientName         String
+  clientEmail        String
+  clientPhone        String
+  subject            String
+  description        String
+  budget             String?
+  locale             String    @default("fr")
+  status             String    @default("PENDING")
+  internalNotes      String    @default("")
+  forwardedToArtisan Boolean   @default(false)
+  forwardedAt        DateTime?
+  processedAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  artisan Artisan?     @relation(fields: [artisanId], references: [id], onDelete: SetNull)
+  events  QuoteEvent[]
+
+  @@index([status])
+  @@index([artisanId])
+  @@index([createdAt])
+}
+
+/// Status history / audit log for a quote request.
+/// type: "CREATED" | "STATUS_CHANGED" | "NOTE_UPDATED" | "FORWARDED" | "UNFORWARDED"
+model QuoteEvent {
+  id         String   @id @default(cuid())
+  quoteId    String
+  type       String
+  fromStatus String?
+  toStatus   String?
+  message    String?
+  userId     String?
+  createdAt  DateTime @default(now())
+
+  quote QuoteRequest @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  user  User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([quoteId])
+}
